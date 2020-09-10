@@ -773,8 +773,9 @@ sub runAround
 			/if (${g}==15) {
 				/delay 2s
 				/keypress Num_5
+				/tar imp
 				/delay 2s
-				/moveto loc -812 68
+				/moveto loc -812 68 -100
 				/delay 5s
 			}
 				
