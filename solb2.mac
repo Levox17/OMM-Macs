@@ -1,0 +1,927 @@
+
+| Notes:
+| I stole most of this mac from Tempus LGUK mac. But he loves me - Levox
+| After buffing - all run to Patri (or nav to his spawn id)
+| Clear trash - check for update - if no update, nav patri, try again - otherwise
+| Nav to Elder WP grids.  kill anythign on xtar. pets to Elder
+| Check xtar again. If clear
+| nav to Evil Eye. Xtar Clear.  Send pets to EE
+| Nav to EE2. Moveto grid
+| Nav to crusader. xtar.  Pets to crusader xtar clear
+| Nav to priest. Xtar. Pets. Xtar. 
+| nav to noble. Pets. Xtar.
+| Invis. Nav to Herbalist. Pets in area. xtar. pets herbalist.
+| nav king, repeat process.
+| check all tasks gtg & all in zone
+|
+| We need an invis sub
+| We need a task check sub -- we kinda have this now
+
+
+#event classPick		"You have selected template: classic #*#"
+#event classPickFail	"template: #*# is not available for selection"
+#Event abilityFailed	"#*#Your ability failed. Timer has been reset#*#"
+
+#turbo 40
+
+sub Main
+	| using this as a toggle for the class template selection
+	| creating a 5 deep array to store classes
+	| 10-shm, 11-nec, 12-wiz, 13-mag, 6-dru
+	/declare eventCheck int outer 		
+	/declare classOptions[5] int outer
+	/declare abilityFailed bool outer FALSE
+	/declare buffN string outer false
+	/declare petN string outer false
+	/declare nukeN string outer false
+	
+	/varset classOptions[1] 10			
+	/varset classOptions[2] 11			
+	/varset classOptions[3] 12			
+	/varset classOptions[4] 13			
+	/varset classOptions[5] 6			
+
+	/popup Old Man Mckenzie - Live Guk Mission - By TempusX
+	| Lets make sure we have the proper plugins before we get too far...
+	/if (!${Bool[${Plugin[MQ2Nav]}]} || !${Bool[${Plugin[MQ2Nav]}]} || !${Bool[${Plugin[MQ2Moveutils]}]})  {
+		/echo You are missing a critical plugin to run this macro.
+		/echo Ensure you have MQ2Nav, MQ2DanNet, and MQ2Moveutils loaded.
+		/echo This macro will end momentarily.
+		/delay 2s
+		/endmac
+	}
+
+	| Mercenaries are not allowed
+	/if (${Group.MercenaryCount}>0) { 
+		/echo Mercenaries can't go on Monster Missions. Macro Ending momentarily.
+		/delay 2s
+		/endmac
+	}
+
+	| Verify enough in group (Min 3)
+	/call checkGroupSize 3
+	|Verify In PoK and Travel to McKenzie
+	/call whereAmI
+	| Make sure everybody is here, hand out roles
+	/call groupAssignments
+	| Duh. Zone in
+	/call zoneIn
+	
+	
+	| Artificial delay for you to zone in
+	/cleanup
+	/delay 30s 
+	/if (${Me.XTarget}>0) /call combatRoutine
+	
+	/while (${Group.AnyoneMissing}==TRUE) {
+        /echo People missing, waiting 5 seconds
+        /delay 5s !${Group.AnyoneMissing}
+    }
+		
+	| Check for a NavMesh in each zone (32 - Solb, 66 - lower guk - Live & Dead sides)
+	/if (${Select[${Zone.ID},66,32]}) {
+		/if (!${Navigation.MeshLoaded}) {
+			/echo DEBUG: No NAVMESH loaded, we won't be able to leave zone in.  Ending Macro.
+			/delay 2s
+			/endmac
+		}
+	}
+	
+	| Cleaning up Xtarget so we dont have pre-existing assignments
+	/echo DEBUG: We're setting your Xtarget to default
+	/declare z int local 
+	/for z 1 to 13
+		/xtarget set ${z} ah
+	/next z
+	
+	| We need to set a MainAssist. It's gonna be the Necro - We might want to think about a backup class as assist.
+	| NOTE: This isn't quite right - non MA toons report no MA set even if one is.
+	/if (${Select[${Zone.ID},66,32]}) {
+		/if (${Me.GroupLeader} && ${Spawn[pc Necromancer].ID}) {
+				/grouproles set ${Spawn[pc Necromancer].Name} 2
+		} else {
+		/echo DEBUG: No Main Assist set!
+		}
+	}
+	
+	| Buff Up
+	/if (${Me.Class.ShortName.Equal[SHM]}) /call shrinkUs
+
+	/call buff
+	| keeping the wizard in place for a moment or two
+	/if (${Me.Class.ShortName.Equal[WIZ]}) /delay 10s
+	
+	/call canWeGoYet 99
+
+	/call runAround
+
+/return
+
+
+
+
+|=============================================================
+| Sub: groupAssignment - Makes sure people are here, 
+|=============================================================
+sub groupAssignments
+	| Group Member ID (Not SpawnID)
+	/declare gmid int local	0
+
+	/if (${Me.GroupLeader}) {
+		| Checking to ensure Everybody is here, in zone, not dead, etc
+		/while (${Group.AnyoneMissing}==TRUE) {
+        	/echo People missing, waiting 5 seconds
+        	/delay 5s !${Group.AnyoneMissing}
+    	}
+		
+		| Waiting on the window to open? But what if it never opens?
+		/while (!${Window[TaskTemplateSelectWnd]}) {
+			/delay 1s ${Window[TaskTemplateSelectWnd]}
+		}
+		
+		/for gmid 1 to 5
+            /if (${Group.Member[${gmid}].Mercenary}) {
+				/echo Merc's cannot go on the mission. Ending macro.
+				/dgga /multiline ; /endm ; /endm
+			}
+			/echo DEBUG: calling classSelect ${gmid}
+			/delay 2s
+			/call classSelect ${gmid}
+			/delay 2s
+		/next gmid		
+		
+		| Since we are driving, let's be the ENC!
+		/notify TaskTemplateSelectWnd TaskTemplateSelectListOptional listselect 14
+		/notify TaskTemplateSelectWnd TaskTemplateSelectAcceptButton leftmouseup
+	} else /if (${Me.Name.NotEqual[${Group.Leader}]}) {
+		/while (${Select[${Task[1].Type},quest]}) {
+			/delay 1s
+		}	
+	}
+/return
+
+| -------------------------------------------------------------------------------------
+| SUB: classSelect
+|
+| hytiek: 
+|         * refactored to run classSelect only when we are GroupLeader. This way we
+|           can control who is what class, avoiding the red text (micro management)
+|         * using text checks against window, in case EQ decides to adjust numbers
+|         * replace invoke with notify
+| -------------------------------------------------------------------------------------
+sub classSelect(int gpos)
+	/dex ${Group.Member[${gpos}].Name} /notify TaskTemplateSelectWnd TaskTemplateSelectListOptional listselect ${classOptions[${gpos}]}
+	/dex ${Group.Member[${gpos}].Name} /timed 40 /notify TaskTemplateSelectWnd TaskTemplateSelectAcceptButton leftmouseup
+/return
+
+| -------------------------------------------------------------------------------------
+| SUB: getTask -- This determines who requests the task and which task to get
+| -------------------------------------------------------------------------------------
+
+sub getTask
+	/if (${Me.GroupLeader}) {
+		/call Mckenzie 2
+		/delay 25
+		/invoke ${Window[TaskSelectWnd].Child[TaskList].Select[1]} 
+		/delay 10
+		/invoke ${Window[TaskSelectWnd].Child[AcceptButton].LeftMouseUp}
+		/Echo Frog Faction? Screw that!  Kill all the frogs!
+		| This else if is for non group leaders to just hang out and wait until they have a shared task, and not a 'quest' task
+	} else /if (${Me.Name.NotEqual[${Group.Leader}]}) {
+		/while (${Select[${Task[1].Type},quest]}) {
+			/delay 1s
+		}	
+	}
+/return
+
+| -------------------------------------------------------------------------------------
+| SUB: Mckenzie - This will initiate the task request in getTask
+| -------------------------------------------------------------------------------------
+
+sub Mckenzie(int rgCheck)
+	/target npc McKenzie
+	/delay 10
+	/if (${rgCheck}==1) {
+		/say after him
+	} else /if (${rgCheck}==2) {
+		/say group
+	} else {
+		/echo This is Fine. Everything is on Fire. -- Failed to say raid/group to mckenzie. Check the mckenzie function
+		/endmac
+	}
+/return
+
+
+| -------------------------------------------------------------------------------------
+| SUB: whereAmI - This will get us to McKenzie to start tasks - IF we're in POK
+| -------------------------------------------------------------------------------------
+
+sub whereAmI
+	/if (${Zone.ID} != 202) {
+		/echo Not in POK and I need to be. This macro will now end.
+		/endmac
+	} else {
+		| This should check if we have LOS on OMM (or close enough) - if not, nav to him. both cases end in the task request chain.
+		/if (${Spawn[npc McKenzie].Distance3D} > 20 || ${Spawn[Old Man McKenzie].LineOfSight}==0) {
+			/nav id ${Spawn[npc McKenzie].ID} setopt dist=18
+			/while (${Navigation.Active}) {
+				/delay 1s !${Navigation.Active}
+			}
+			/call getTask
+		} else {
+			/call getTask
+		}
+	}
+/return
+
+|-------------------------------------------------------------------------------
+|  SUB: CheckGroupSize
+|		Make sure there is a minimum number of group members
+|-------------------------------------------------------------------------------
+sub checkGroupSize(int cgs)
+	| check that we are actually in a group
+	/if (${Group.GroupSize} <= ${cgs}) {
+		/error Group size minimum requirement is \at${cgs}
+		/endmac
+	}
+/return
+
+
+| -------------------------------------------------------------------------------------
+| SUB: zoneIn - Zones us in & checks if we're still in pok or not (and tries again)
+| -------------------------------------------------------------------------------------
+sub zoneIn
+	/target npc McKenzie
+	/echo Waiting for the instance to warm up...
+	/while (${Task[${Window[TaskWnd].Child[TASK_TaskList].List[1,3]}].Timer.TotalSeconds} >= 21555) {
+		/delay 10
+	}
+	/say story
+	/delay 1s
+	/if ((${Zone.ID})==202) {
+			/echo Still in PoK, giving it another 10 sec
+			/delay 100
+			/say story
+			}
+/return
+
+| -------------------------------------------------------------------------------------
+| SUB: buffRoutines - Buff and Make Pets
+| 5 Class routines - call buff routine, pet, petbuff routine
+| makePet routine and petBuff routine
+| additional buffs will be as follows:
+| /call buffRoutine "spell name" 2 (use a 2 flag if it's a group spell)
+| -------------------------------------------------------------------------------------
+
+
+| Sits dumb fucks down to med if under 40mana & not in combat
+sub shouldWeMed
+	/if (${Me.PctMana}<60 && ${Me.CombatState.NotEqual[COMBAT]} && ${Me.State.NotEqual[Sit]}) {
+	/echo \atwe hit the med routine and passed if check
+		/if (${Me.Class.ShortName.Equal[SHM]}) {
+/echo shm passed his if
+			/while (${Me.PctMana}<95 && ${Me.XTarget}<1) {
+/echo shm in while
+			/delay 1s
+				/call isSpellReady "Cannibalize II"
+/echo shm passed castready
+					/if (${Me.AltAbilityReady["Cannibalize II"]}) {
+/echo shm should cast
+						/alt activate ${Me.AltAbility["Cannibalize II"].ID}
+						/call postCastDelay
+					}
+				/if (${Me.PctHPs}<50) /call healRoutine "Greater Healing"
+			}
+		}		
+		/echo DEBUG: Mana is ${Me.PctMana} and below the defined threshhold. I'm medding
+		/if (${Me.State.NotEqual[SIT]} && ${Me.XTarget}<1) {
+			/sit on
+			/delay 3s
+		}
+		/while (${Me.PctMana}<95 && ${Me.CombatState.NotEqual[COMBAT]}) {
+			/delay 1s
+			/echo Debug: In the Med cycle
+		}
+		/echo DEBUG: Exited Med cycle
+	}
+/return TRUE
+
+sub buff
+	/delay 1s !${Group.AnyoneMissing}
+
+	/if (${Me.Class.ShortName.Equal[DRU]}) /call buffDru
+	/if (${Me.Class.ShortName.Equal[ENC]}) /call buffEnc
+	/if (${Me.Class.ShortName.Equal[MAG]}) /call buffMag
+	/if (${Me.Class.ShortName.Equal[NEC]}) /call buffNec
+	/if (${Me.Class.ShortName.Equal[SHM]}) /call buffShm
+	/if (${Me.Class.ShortName.Equal[WIZ]}) /call buffWiz
+/return
+
+sub buffDru
+	/call buffRoutine "Pack Chloroplast"
+	/call buffRoutine "Pack Spirit"
+	/call buffRoutine "Skin Like Nature"
+/return
+
+sub buffEnc
+	/call buffRoutine "Group Resist Magic"
+	/call buffRoutine "Clarity"
+/return
+
+sub buffShm
+	/call buffRoutine "Talisman of Altuna"
+	/call makePet "Frenzied Spirit"
+/return
+
+sub buffNec
+	/call buffRoutine "Lich"
+	/call makePet "Invoke Death"
+/return
+
+sub buffMag
+	/echo Earth pet because we dont need runners!
+	/call makePet "Greater Conjuration: Earth"
+/return
+
+sub buffWiz
+	/call buffRoutine "Levitate"
+/return
+
+sub buffRoutine(string buffName)
+        /declare c int local 0
+                /echo DEBUG buffName: ${buffName}
+        /varset  buffN ${buffName}
+				/echo DEBUG: buffn: ${buffN}
+		
+		/for c 0 to ${Group.Members}
+			| Make sure we Can do the thing
+			| NOTE2: -- We need to check if your ability was interrupted
+			/if (${Me.Invis} || ${Me.Moving} || ${Me.PctMana} < 5 || ${Me.Casting.ID}) {
+				/continue
+			}
+
+		|	/if (${Me.XTarget}>0) /call combatRoutine
+			| For Self Buffs to cycle through - this shit doesn't even belong inside of a for loop what the fuck
+			/if (${Spell[${buffN}].TargetType.Equal[Self]} && !${Me.Buff[${buffN}].ID}) {
+					/alt act ${Me.AltAbility[${buffN}].ID}
+					/call postCastDelay
+					/break
+			} else /if (${Spell[${buffN}].TargetType.NotEqual[Self]}) {
+					/goto :step2
+			} else {
+					/return false
+			}
+			
+			:step2
+			| Making sure our spell is ready
+			/echo \agisSpellReady \aw"${buffN}"
+			/call isSpellReady "${buffN}"
+			
+			| If shits ready lets clear our target, get the right target and buff them
+			/if (${Me.AltAbilityReady[${buffN}]}) {
+				/squelch /target clear
+				/delay 15
+				/squelch /target id ${Group.Member[${c}].ID}
+				/delay 1s ${Target.ID} == ${Group.Member[${c}].ID}
+				/if (${Me.Class.ShortName.Equal[ENC]} && ${Target.Class.ShortName.Equal[NEC]}) /continue
+					/while (!${Target.BuffsPopulated}) {
+						/delay 1s ${Target.BuffsPopulated}
+						/echo DEBUG: Buffs Populated on ${Target.Name} : ${Target.BuffsPopulated}
+					}
+				/if (!${Target.Buff[${buffN}].ID}) {
+					/alt act ${Me.AltAbility[${buffN}].ID}
+					/call postCastDelay
+				}
+			}		
+		/if (${Select[${Spell[${buffN}].TargetType},Group v2,Group v1]}) /break
+		/if (${Me.XTarget}>0) /call combatRoutine
+		/next c
+/return
+
+sub nukeRoutine(string nukeName, int targetID)
+	/varset nukeN ${nukeName}
+
+	/call checkSpell ${nukeN} ${targetID}
+
+	/if (${Me.Moving} || ${Me.Casting.ID}) {
+		/return
+	}
+	/call isSpellReady "${nukeN}"
+
+	/if (${Spell[${nukeN}].SpellType.Equal[Detrimental]}) {
+		/if (${Select[${Spell[${nukeN}].TargetType},Single,LifeTap]}) {
+			/delay 5
+			/squelch /target id ${targetID}
+			/delay 1s ${Target.ID} == ${targetID}
+			/echo We're trying to cast \ag${nukeN}\ag on \at${targetID}\at if we pass LOS
+			/if (${Target.LineOfSight} && ${Select[${Target.Type},NPC]}) {
+				/delay 5
+				/alt act ${Me.AltAbility[${nukeN}].ID}
+				/call postCastDelay
+			}
+		}
+	}
+/return
+			
+sub makePet(string petName)
+	
+	/varset  petN ${petName}
+	/if (${Me.Invis} || ${Me.Moving} || ${Pet.ID} || ${Me.Casting.ID}) {
+		/return FALSE
+	}
+	| Do we have mana to make a pet
+	/call checkMana "${petN}"
+	
+	| Necro Pet
+	/if (${Me.Class.ShortName.Equal[NEC]} && ${FindItemCount[Bone Chips]}) {
+		/call isSpellReady "${petN}"
+		/alt act ${Me.AltAbility[${petN}].ID}
+		/call postCastDelay
+	}
+	| Mage Pet	
+	/if (${Me.Class.ShortName.Equal[MAG]} && ${FindItemCount[Malachite]}) {
+		/call isSpellReady "${petN}"
+		/alt act ${Me.AltAbility[${petN}].ID}
+			/delay 1s
+		/call postCastDelay
+	}	
+	| Shaman Pet	
+	/if (${Me.Class.ShortName.Equal[SHM]}) {
+		/call isSpellReady "${petN}"
+		/alt act ${Me.AltAbility[${petN}].ID}
+			/delay 1s
+		/call postCastDelay
+	}	
+	| Buff the damn thing
+	/call buffPet
+	| Our Pets are tanking shit, so taunt = ON
+	/if (!${Me.Pet.Taunt}) /pet taunt on
+/return
+
+sub buffPet
+
+	|Mage Burnout
+	/call checkSpell "Burnout III" ${Me.Pet.ID}
+	/if (${Me.Class.ShortName.Equal[MAG]} &&  && ${Me.AltAbilityReady[Burnout III]} && (${Me.CurrentMana} > ${Spell[Burnout III].Mana})) {
+		/alt act ${Me.AltAbility[Burnout III].ID}
+		/call postCastDelay
+	}
+	|Necro haste
+	/call checkSpell "Burnout III" ${Me.Pet.ID}
+	/if (${Me.Class.ShortName.Equal[NEC]} &&  && ${Me.AltAbilityReady[Augment Death]} && (${Me.CurrentMana} > ${Spell[Augment Death].Mana})) {
+		/alt act ${Me.AltAbility[Augment Death].ID}
+		/call postCastDelay
+	}
+/return
+
+
+sub healRoutine(string healName)
+
+	/declare tempWorstHurt int local 100
+	/declare tempWorstID int
+	/declare e int local 0
+	/declare ee int local 0
+	
+
+	| If im not a healer, I have no business in here
+	/doevents flush
+    /if (!${Select[${Me.Class.ShortName},CLR,DRU,SHM]}) /return
+
+	| Cycle through the group, see who has the lowest HP
+	/echo Entering Heal For Loop
+	/for e 0 to ${Group.Members}
+		/if (${Group.Member[${e}].PctHPs} < ${tempWorstHurt}) {
+			/echo ${Group.Member[${e}]} - ${Group.Member[${e}].PctHPs} < ${tempWorstHurt}
+			/varset tempWorstHurt ${Group.Member[${e}].PctHPs}
+			/echo ${tempWorstHurt} - tempWorstHurt
+			/varset tempWorstID ${Spawn[${Group.Member[${e}]}].ID}
+			/echo ${Spawn[${Group.Member[${e}]}].Name} - ${tempWorstID}
+		}
+	/next e
+	/if (${tempWorstHurt}>80) {
+	
+		/for ee 0 to ${Group.Members}
+| Unsure if this commented line works the way I wanted.
+|			/if (${Select[${Group.Member[${ee}].Pet.ID},NULL]}) /continue
+			/if (${Group.Member[${ee}].Pet.PctHPs} < 80) {
+				/echo ${Group.Member[${ee}].Pet} - ${Group.Member[${ee}].Pet.PctHPs} < 80
+				/varset tempWorstHurt ${Group.Member[${ee}].Pet.PctHPs}
+				/echo ${tempWorstHurt} - tempWorstHurt
+				/varset tempWorstID ${Spawn[${Group.Member[${ee}]}.Pet.ID]}
+				/echo ${Spawn[${Group.Member[${ee}].Pet.ID}]} - ${tempWorstID}
+			}
+		/next ee
+	}
+	
+	/if (${tempWorstHurt}>80) /return
+	
+	
+	/call checkSpell ${healName} ${tempWorstID}
+	
+	| Verify the Spell is ready
+	/call isSpellReady "${healName}"
+	
+	| Lets Cast a heal on the right guy
+	/if (${Me.AltAbilityReady[${healName}]} && ${Spawn[id ${tempWorstID}].Type.NotEqual[corpse]}) {
+		/squelch /target id ${tempWorstID}
+		/delay 1s ${Target.ID} == ${tempWorstID}
+		/alt act ${Me.AltAbility[${healName}].ID}
+		/call postCastDelay
+		/doevents Event_abilityFailed
+		/if (${abilityFailed}) /break
+	}
+/return
+
+| Credit: CWTN -- calls our range and mana checks on all spells
+| NOTE: All Spells will require a targetID and name passed to these functions
+sub checkSpell(string spellName, int targetIDD) 
+  /if (!${ManaCheck[${spellName}]}) /return false
+  /if (!${CheckRange[${spellName},${targetIDD}]}) /return false
+/return true
+
+| Validates if we have mana to cast or not
+sub checkMana(string spellName1)
+  /if (${Spell[${spellName1}].Mana} > ${Me.CurrentMana}) {
+		/echo DEBUG : Insufficient Mana to cast ${spellName1}
+		/echo We should probably med and do a med call here, if we arent in combat
+		/return FALSE
+	}
+/return true
+
+| Credit: CWTN - Verifies our target is within range of the spell we want to cast
+sub checkRange(string spellName2, int targetID2) {
+  /if (!${Spell[${spellName2}].ID}) /return false
+  /if (!${Spawn[id ${targetID2}].ID}) /return false
+  /declare range int local 0
+  /if (${Spell[${spellName2}].TargetType.Equal[Single]}) /varset range ${Spell[${spellName2}].Range}
+  /if (${Select[${Spell[${spellName2}].TargetType},group v2,group v1]}) /varset range ${Spell[${spellName2}].AERange}
+  /if (${Spawn[id ${targetID2}].Distance3D} > ${range}) /return false
+  /return true
+}
+
+| We need this after every cast cycle
+sub postCastDelay
+	/delay 1s
+	/while (${Me.Casting.ID}) {
+		/delay 1s !${Me.Casting.ID}
+	}
+/return
+
+| Waiting on a Spell to be Ready
+sub isSpellReady(string spellName3)
+		/while (!${Me.AltAbilityReady[${spellName3}]}) {
+			/echo DEBUG: Waiting on ${Me.AltAbility[${spellName3}].Name} to refresh
+			/delay 1s ${Me.AltAbilityReady[${spellName3}]}
+		}
+/return
+|==============================================
+| ------------ End of Casting Subs ------------
+|==============================================
+
+sub sendPets
+	/if (${Me.Pet.ID} && ${Me.Pet.Target.ID} != ${Me.GroupAssistTarget.ID}) /pet attack ${Me.GroupAssistTarget.ID}
+/return
+
+
+
+| Combat routine
+| Calls Heals
+| Calls Nukes
+| sets MA target
+| sends pets
+| stays here until xtar is clear
+
+sub combatRoutine
+	/declare ff int local
+	/echo Who wants to kick some ass? I Do! I Do!
+	:loop
+	
+	| If we dont have mobs on xtar and we aren't in combat why are we here? OUT
+	/if (${Me.XTarget}<1 && ${Me.CombatState.NotEqual[COMBAT]}) /return
+
+	/if (${Me.ID} != ${Group.MainAssist.ID} && ${Group.MainAssist.Distance3D}>8) /nav id ${Group.MainAssist.ID} | setopt dist=7
+		| Give Folks time to nav to me
+	/delay 10s !${Navigation.Active}
+
+	/if (${Select[${Me.Class.ShortName},DRU,SHM]}) /call healRoutine "Greater Healing"
+
+	| trying to get the MA a good target thats within LOS and close to us to kill first
+	/if (${Me.ID}==${Group.MainAssist.ID} && ${Me.XTarget}>=1) {
+		/for ff 1 to 13
+			/if (${NearestSpawn[npc targetable radius 175 noalert 1].ID}==${Me.XTarget[${ff}].ID}) {
+				/squelch /target id ${Me.XTarget[${ff}].ID}
+				/delay 1s ${Target.ID} == ${Me.XTarget[${ff}].ID}
+				/break
+			}
+		/next ff	
+	}	
+	
+	/delay 1s
+	| Chanter Mez routine here!
+	
+	/call sendPets
+	| Everybody Nuke! ${Me.GroupAssistTarget[1].ID}  --- ${Me.GroupAssistTarget.ID}
+
+	/if (${Me.Class.ShortName.Equal[WIZ]}) /call nukeRoutine "Ice Comet" ${Me.GroupAssistTarget[1].ID}
+	/if (${Me.Class.ShortName.Equal[NEC]}) /call nukeRoutine "Drain Soul" ${Target.ID}
+	/if (${Me.Class.ShortName.Equal[MAG]}) /call nukeRoutine "Shock of Swords" ${Me.GroupAssistTarget[1].ID}
+	/if (${Me.Class.ShortName.Equal[DRU]}) /call nukeRoutine "Ice" ${Me.GroupAssistTarget[1].ID}
+	/if (${Me.Class.ShortName.Equal[SHM]}) /call nukeRoutine "Blizzard Blast" ${Me.GroupAssistTarget[1].ID}
+	/if (${Me.Class.ShortName.Equal[ENC]}) /call nukeRoutine "Discordant Mind" ${Me.GroupAssistTarget.DoTarget.ID}
+	
+	
+	/if (${Select[${Me.Class.ShortName},NEC,SHM,MAG]} && !${Pet.ID}) {
+		/if (${Me.Class.ShortName.Equal[SHM]}) /call makePet "Frenzied Spirit"
+		/if (${Me.Class.ShortName.Equal[NEC]}) /call makePet "Invoke Death"
+		/if (${Me.Class.ShortName.Equal[MAG]}) /call makePet "Greater Conjuration: Earth"
+	}
+	
+	/goto :loop
+/return
+
+
+
+| Runs us to the various points we need to go to and does all of our mission for us
+| includes custom spots for movement
+| will validate against task list for updates
+sub runAround
+	/declare Locs[19] string local
+	/declare g int local 0
+	/varset Locs[1] -423.38 -236.07 -108.22		| Zone in
+	/varset Locs[2] -560.45 -120.71 -93.97		| noble
+	/varset Locs[3] -588.17 -238.30 -79.50		| King prep
+	/varset Locs[4] -543.80 -336.91 -63.97		| king
+	/varset Locs[5] -579.24 -316.37 -74.97 		| priest
+	/varset Locs[6] -651.63 -317.78 -69.97	 	| champ
+	/varset Locs[7] -666.60 -235.01 -82.97		| guano
+	/varset Locs[8] -867.70 -282.62 -65.97		| nox
+	/varset Locs[9] -882.23 -193.85 -79.97		| Stone prep 
+	/varset Locs[10] -981.58 -344.02 -84.97		| Stone
+	/varset Locs[11] -951.10 -162.17 -68.97		| stone exit
+	/varset Locs[12] -720.60 -118.35 -81.97		| DB Prep
+	/varset Locs[13] -738.55 -145.16 -93.97		| DB prep #2
+	/varset Locs[14] -754.39 -67.15 -107.97		| Before lava
+	/varset Locs[15] -754.39 -67.15 -107.97		| Base Lava Rang
+	/varset Locs[16] -685.67 93.99 -85.97		| Top Lava Ramp
+	/varset Locs[17] -545.97 247.88 -75.97		| Djarn Prep 1
+	/varset Locs[18] -480.67 298.82 -80.97		| Djarn prep 2
+	/varset Locs[19] -482.68 326.47 -83.97		| Djarn
+	
+	|We're gonna need to be using this window for things to work
+	/invoke ${Window[TaskWnd].DoOpen}
+	/delay 1s 
+	/invoke ${Window[TaskWnd].Child[TASK_TaskList].Select[1,3]}
+	
+
+	/for g 1 to ${Locs.Size}
+
+		/echo DEBUG: Moving to Step ${g}
+		:resumeNav
+		| This should drive us around
+		/if (${Zone.ID}==32) {
+			/nav loc ${Locs[${g}]}
+			/echo navigating to ${Locs[${g}]}
+		}
+	
+	
+	/while (${Navigation.Active}) {
+			
+		/if (${Me.XTarget}>0) {
+			/nav stop
+			/call combatRoutine
+			/call canWeGoYet 50
+		}
+		/delay 1s
+	
+
+		| We clearly didn't make it, lets try it again
+		/if (!${Navigation.Active} && ${Math.Distance[${Me.Y} ${Me.X} ${Me.Z} : ${Locs[${g}]}]} > 15) /goto :resumeNav
+		| We should be at our Waypoint now
+		/if (!${Navigation.Active} && ${Math.Distance[${Me.Y} ${Me.X} ${Me.Z} : ${Locs[${g}]}]} < 15) {
+			
+			|Moving to Noble Spawn
+			/echo \agMoving to the Noble
+			/if (${g}==2) {
+				
+				/while (${Task[Ancient Heroes - Nagafen's Lair].Objective[4].Status.NotEqual[Done]}) {
+					/echo Noble While
+					/delay 1s
+					/squelch /target ${Spawn[npc noble]}
+					/delay 1s ${Target.ID}==${Spawn[npc noble].ID}
+					/call sendPets
+					/call combatRoutine
+					/if (${Task[Ancient Heroes - Nagafen's Lair].Objective[4].Status.Equal[Done]} && ${Me.XTarget}<1) /break
+				}
+				/echo \agDone with the Noble Step
+				/call canWeGoYet 50
+			}
+			/echo \agMoving to the Royal Prep Area
+			/if (${g}==4) {
+
+				/while (${Task[Ancient Heroes - Nagafen's Lair].Objective[7].Status.NotEqual[Done]}) {
+					/echo King While
+					/delay 1s
+					/squelch /target ${Spawn[npc king]}
+					/delay 1s ${Target.ID}==${Spawn[npc king].ID}
+					/call sendPets
+					/call combatRoutine
+					/if (${Task[Ancient Heroes - Nagafen's Lair].Objective[7].Status.Equal[Done]} && ${Me.XTarget}<1) /break
+				}
+				/echo \agDone with the King Step
+				/call canWeGoYet 50
+			}
+			/echo \agMoving to the Priest
+			/if (${g}==5) {
+				/while (${Task[Ancient Heroes - Nagafen's Lair].Objective[5].Status.NotEqual[Done]}) {
+					/echo Priest While
+					/delay 1s
+					/squelch /target ${Spawn[npc priest]}
+					/delay 1s ${Target.ID}==${Spawn[npc priest].ID}
+					/call sendPets
+					/call combatRoutine
+					/if (${Task[Ancient Heroes - Nagafen's Lair].Objective[5].Status.Equal[Done]} && ${Me.XTarget}<1) /break
+				}
+				/echo \agDone with Priest
+				/call canWeGoYet 50
+			}
+			/echo \agMoving to the Guano
+			/if (${g}==7) {
+				/while (${Task[Ancient Heroes - Nagafen's Lair].Objective[2].Status.NotEqual[Done]}) {
+					/echo Guano While
+					/delay 1s
+					/squelch /target ${Spawn[npc guano]}
+					/delay 1s ${Target.ID}==${Spawn[npc guano].ID}
+					/call sendPets
+					/call combatRoutine
+					/if (${Task[Ancient Heroes - Nagafen's Lair].Objective[2].Status.Equal[Done]} && ${Me.XTarget}<1) /break
+				}
+				/echo \agDone with Guano
+				/call canWeGoYet 50
+			}
+			
+			| Pausing here to ensure we have lev before we do the bridge
+			| Nobody needs to fall off and drown because nav sucks
+			/if (${g}==14) {
+				|give wizard time to buff us
+				/delay 4s
+				/call buff
+				/delay 4s
+				/call canWeGoYet 100
+			}
+			
+			/if (${g}==15) {
+				/delay 2s
+				/keypress Num_5
+				/delay 2s
+				/moveto loc -812 68
+				/delay 5s
+			}
+				
+			/echo \agMoving to Champion
+			/if (${g}==6) {
+				/while (${Task[Ancient Heroes - Nagafen's Lair].Objective[4].Status.NotEqual[Done]}) {
+					/delay 1s
+					/squelch /target ${Spawn[npc noble]}
+					/delay 1s ${Target.ID}==${Spawn[npc noble].ID}
+					/call sendPets
+					/call combatRoutine
+					/if (${Task[Ancient Heroes - Lower Guk].Objective[4].Status.Equal[Done]} && ${Me.XTarget}<1) /break
+				}
+				/echo \agDone with Noble
+				/call canWeGoYet 50
+			}
+			
+			/echo \agMoving to Nox Spider
+			/if (${g}==8) {
+				/while (${Task[Ancient Heroes - Nagafen's Lair].Objective[8].Status.NotEqual[Done]}) {
+					/squelch /target ${Spawn[npc noxious]}
+					/delay 1s ${Target.ID}==${Spawn[npc noxious].ID}
+					/call sendPets
+					/call combatRoutine
+					/if (${Task[Ancient Heroes - Lower Guk].Objective[8].Status.Equal[Done]} && ${Me.XTarget}<1) /break
+				}
+				/echo \agDone with Nox Spider
+				/call canWeGoYet 90
+			}
+			
+			/echo \agMoving to Stone Spider
+			/if (${g}==10) {
+				/while (${Task[Ancient Heroes - Nagafen's Lair].Objective[9].Status.NotEqual[Done]}) {
+					/squelch /target ${Spawn[npc stone]}
+					/delay 1s ${Target.ID}==${Spawn[npc stone].ID}
+					/call sendPets
+					/call combatRoutine
+					/if (${Task[Ancient Heroes - Nagafen's Lair].Objective[9].Status.Equal[Done]} && ${Me.XTarget}<1) /break
+				}
+				/echo \agDone with Stone Spider
+				/call canWeGoYet 80
+			}
+			
+			/echo \agMoving to Moving to Death Beetle
+			/if (${g}==13) {
+				/while (${Task[Ancient Heroes - Nagafen's Lair].Objective[3].Status.NotEqual[Done]}) {
+					/squelch /target ${Spawn[npc death]}
+					/delay 1s ${Target.ID}==${Spawn[npc death].ID}
+					/call sendPets
+					/call combatRoutine
+					/if (${Task[Ancient Heroes - Nagafen's Lair].Objective[3].Status.Equal[Done]} && ${Me.XTarget}<1) /break
+				}
+				/echo \agDone with Death Beetle
+				/call canWeGoYet 90
+			}
+			
+			/echo \agHome Stretch Baby! Djarn!
+			/if (${g}==19) {
+				/while (${Task[Ancient Heroes - Nagafen's Lair].Objective[10].Status.NotEqual[Done]}) {
+					/squelch /target ${Spawn[npc Djarn]}
+					/delay 1s ${Target.ID}==${Spawn[npc Djarn].ID}
+					/call sendPets
+					/call combatRoutine
+					/if (${Task[Ancient Heroes - Lower Guk].Objective[10].Status.Equal[Done]} && ${Me.XTarget}<1) /break
+				}
+				/echo \agWe're done! Open your damn box!
+				/call canWeGoYet 80
+			}
+		}
+	}
+	/next g
+/return		
+	
+sub holdUp
+	/declare y int 0
+	/declare medX bool local FALSE
+	
+	/for y 0 to ${Group.Members}
+		/if (${Group.Member[${y}].PctMana}<95) /varset medX TRUE
+	/next y
+	
+	/while (${medX} && ${Me.XTarget}<1) {
+		/delay 5s !${Me.CombatState.NotEqual[COMBAT]}
+		/if (${Select[${Me.Class.ShortName},DRU,SHM]}) /call healRoutine "Greater Healing"
+	}
+	
+	/if (${Me.XTarget}>=1) /call combatRoutine
+/return
+
+
+
+sub canWeGoYet(int startMed)
+	/declare mm int local 0
+
+	/for mm 0 to ${Group.Members}
+		/if (${Select[${Group.Member[${mm}].Class.ShortName},MAG,ENC,NEC,WIZ,DRU,SHM]}) {
+			/while (${Group.Member[${mm}].PctMana} < ${startMed}) {
+				/if (${Me.XTarget}>=1) /call combatRoutine
+				/if (${Me.CombatState.NotEqual[COMBAT]}) { 
+					/if (${Me.State.NotEqual[SIT]}) {
+						/sit on
+						/delay 1s
+					}
+				}
+				|/echo \atCalling shouldWeMed from canWeGoYet Routine
+				/call shouldWeMed
+				/delay 1s
+			}
+		}
+	/next mm
+	/stand on
+/return
+	
+
+sub shrinkUs
+	/declare sk int local 0
+	/if (!${Me.Class.ShortName.Equal[SHM]}) /return
+
+	/for sk 0 to ${Group.Members}
+		
+		/if (${Group.Member[${sk}].Height} > 3) {
+			/call isSpellReady "Shrink"
+			/if (${Me.AltAbilityReady[Shrink]}) {
+				/squelch /target clear
+				/delay 15
+				/squelch /target id ${Group.Member[${sk}].ID}
+				/delay 1s ${Target.ID} == ${Group.Member[${sk}].ID}
+				/alt act ${Me.AltAbility[Shrink].ID}
+				/call postCastDelay
+			}
+		}	
+	/next sk
+/return
+
+
+| -------------------------
+| Event Subs
+| -------------------------
+sub Event_classPick
+	/varset eventCheck 1
+/return
+
+| Not In Use Currently
+sub Event_classPickFail
+	/varset eventCheck 0
+/return
+
+| Not in Use Currently
+sub Event_abilityFailed
+	/varset abilityFailed TRUE
+/return
